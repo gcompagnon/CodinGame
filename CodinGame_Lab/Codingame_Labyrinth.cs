@@ -49,11 +49,22 @@ public class Coord
         else
             return !c1.Equals(c2);
     }
+
+    public override string ToString()
+    {
+        return "(R:" + this.R + ",C:" + this.C + ")";
+    }
 }
 public class SearchNode
     {
     public static SearchNode[,] searchTree;
-    public static SearchNode startNode,finalNode;
+    public static SearchNode startNode, finalNode, currentNode, targetNode;
+    // List of the SearchNode with leafs with ?, the nearest from K is the first
+    public static Queue<SearchNode> unknownNodes = new Queue<SearchNode>();
+    public static Queue<int> pathFinalToStart;
+    public static Stack<int> pathCurrentToTarget;
+    private static int?[,] stepsToCurrent; // reinstance each turn , each time , the position changes
+    public static Queue<SearchNode> newNodes = new Queue<SearchNode> ();
 
     public static int C, R, A;
     public const int DOWN = 0;
@@ -76,230 +87,410 @@ public class SearchNode
 
     // nb of usefull nodes, not null, not deadend
     private int nbNodes;
+    public static bool OptimizedPathFound;
 
     public bool Deadend { get => (nbNodes <= 1);  } // meaning no more exit in the leaf => optimization
 
     // minimal to go to T / value 0 at the point T
-    public int StepsToT { get ; set ; }
+    public int StepsToStart { get ; set ; }
     // minimal to go back to K / value 0 at the point K
-    public int StepsToK { get; set; }
     public bool Final { get => (finalNode != null && this.Point == SearchNode.finalNode.Point); }
     public bool Start { get => (startNode != null && this.Point == SearchNode.startNode.Point); }
+    public bool Current { get => (currentNode != null && this.Point == SearchNode.currentNode.Point); }
+    public bool Explored { get; private set; }
+
     //  leafs with ?
     public bool Unknown { get; set; }
-    public SearchNode(Coord point, int stepsToT, int stepsToK, bool unknwown = true)
+    public int StepsToCurrent { get => (SearchNode.stepsToCurrent[this.Point.R, this.Point.C] ?? -1);
+                                private set => SearchNode.stepsToCurrent[this.Point.R, this.Point.C] = value; }
+
+
+    private SearchNode(Coord point, int stepsToStart)
     {
         Point = point;
         nbNodes = 4;
-        StepsToT = stepsToT;
-        StepsToK = stepsToT;
-        Unknown = unknwown;
+        StepsToStart = stepsToStart;
+        Unknown = true;
+        Explored = false;
     }
 
+    #region static utils
+    /// <summary>
+    /// Build the first Node (start) and init the Tree
+    /// </summary>
+    /// <param name="r">dimension in rows</param>
+    /// <param name="c">dimension in columns</param>
+    /// <param name="a">nb de max steps for the back return path</param>
+    /// <param name="startR">start position</param>
+    /// <param name="startC">start position</param>
+    public static void InitSearchTree(int r, int c, int a, int startR, int startC)
+    {
+        if (startR >= 0 && startR <= r && startC >= 0 && startC <= c)
+        {
+            SearchNode.C = c;
+            SearchNode.R = r;
+            SearchNode.A = a;
+            SearchNode.searchTree = new SearchNode[r, c];
+            SearchNode.startNode = new SearchNode(new Coord(startR, startC), 0);
+            SearchNode.searchTree[startR, startC] = SearchNode.startNode;
+            SearchNode.OptimizedPathFound = false;
+            SearchNode.stepsToCurrent = new int?[SearchNode.R, SearchNode.C];
+        }
+    }
+    public static SearchNode AddNewNodeSearchTree(Coord c, int stepsToStart, int? stepsToCurrent)
+    {
+        SearchNode node = new SearchNode(c, stepsToStart);
+        SearchNode.searchTree[c.R, c.C] = node;
+        node.StepsToCurrent = stepsToCurrent ?? -1;
+        return node;
+    }
     public static void OptimizePathsToStart(SearchNode a, SearchNode b)
     {
+        Console.Error.WriteLine("OptimizePathsToStart " + a);
+        Console.Error.WriteLine("OptimizePathsToStart " +b);
         if (a != null && b != null)
         {
-            if (a.StepsToT > b.StepsToT)
+            if (a.StepsToStart > b.StepsToStart)
             {
-                a.FoundShortCutsToStart(b.StepsToT);
+                a.FoundShortCutsToStart(b.StepsToStart);
             }
-            else if (a.StepsToT > b.StepsToT)
+            else if (a.StepsToStart > b.StepsToStart)
             {
-                b.FoundShortCutsToStart(a.StepsToT);
-            }
-        }
-    }
-
-    private void FoundShortCutsToStart(int stepsToT)
-    {
-        if (this.StepsToT > stepsToT)
-        {
-            this.StepsToT = stepsToT;
-            foreach (SearchNode n in this.nodes)
-            {
-                if (n != null)
-                    n.FoundShortCutsToStart(stepsToT + 1);
-            }
-        }        
-    }
-
-    private int FoundShortCutsToK(int stepsToK)
-    {
-        if (this.StepsToK > stepsToK)
-        {
-            this.StepsToK = stepsToK;
-            foreach (SearchNode n in this.nodes)
-            {
-                if (n != null)
-                    n.FoundShortCutsToK(stepsToK + 1);
+                b.FoundShortCutsToStart(a.StepsToStart);
             }
         }
-        return this.StepsToK;
     }
-    
-    /// <summary>
-    /// check if a exit is possible and if not ... optimize the previous path 
-    /// </summary>
-    public void ProcessDeadend()
+    public static void CalculatePathsToCurrent()
     {
-            nbNodes = 0;
-            foreach (SearchNode n in this.nodes)
-            {
-                if (n != null && ( !n.Deadend || n.Unknown || n.Final ) )
-                {
-                    nbNodes++;
-                }
-            }
+        SearchNode.stepsToCurrent = new int?[SearchNode.R, SearchNode.C];
+        SearchNode.currentNode.SetPathToCurrent(0);
     }
 
     /// <summary>
     /// return the coordonate of the point next to the direction : RIGHT, ...
     /// or null if in the frontier/limits
     /// </summary>
-    /// <param name="posR"></param>
     /// <param name="posC"></param>
-    /// <param name="direction"></param>
+    /// <param name="direction">RIGHT LEFT UP or DOWN</param>
     /// <returns></returns>
-    private static Coord NearCoord(int posR, int posC,int direction)
+    public static Coord NearCoord(Coord posC, int direction)
     {
-        switch(direction)
+        switch (direction)
         {
             case RIGHT:
-                if (posC == SearchNode.C - 1) return null;
-                return new Coord(posR, posC + 1);
+                if (posC.C == SearchNode.C - 1) return null;
+                return new Coord(posC.R, posC.C + 1);
             case LEFT:
-                if (posC == 0) return null;
-                return new Coord(posR, posC - 1);
+                if (posC.C == 0) return null;
+                return new Coord(posC.R, posC.C - 1);
             case UP:
-                if (posR == 0) return null;
-                return new Coord(posR - 1 , posC);
+                if (posC.R == 0) return null;
+                return new Coord(posC.R - 1, posC.C);
             default:
             case DOWN:
-                if (posR == SearchNode.R - 1) return null;
-                return new Coord(posR + 1, posC);
+                if (posC.R == SearchNode.R - 1) return null;
+                return new Coord(posC.R + 1, posC.C);
         }
     }
+    #endregion
 
+    #region public
     /// <summary>
     /// exploration routine :  strategy is to explore all the displayed zone. in order to build the SearchTree  , with the deadend possible
     /// </summary>
     /// <param name="lab">lab matrix</param>
-    /// <param name="KR">position Row</param>
-    /// <param name="KC">position Column</param>
-    /// <param name="directionsToExplore"></param>
-    /// <param name="stepsFromT"></param>
-    public void Explore(char[][] lab, int posR, int posC, int[] directionsToExplore)
-    {
-        Console.Error.WriteLine("Explore " + posR + " " + posC + " fromT:" + this.StepsToT + " fromK:" + this.StepsToK);
-
+    public void Explore(char[][] lab)
+    {        
         if (Unknown)
         {
+            //Console.Error.WriteLine("Explo1 " + this);            
             Unknown = false; //stay to known if any other neighbor is '?'  
-            foreach (int d in directionsToExplore)
+            foreach (int d in SearchNode.AllDirections)
             {
-
                 SearchNode currentNeightborNode = null;
-                Coord neightbor = SearchNode.NearCoord(posR, posC, d);
-                if (neightbor != null)
+                Coord neightbor = SearchNode.NearCoord(this.Point, d);
+                if (neightbor != null) // if not on a frontier
                 {
                     currentNeightborNode = SearchNode.searchTree[neightbor.R, neightbor.C];
-                    if (currentNeightborNode != null)// already displayed , is it ashortcuts
+                    if (currentNeightborNode == null)
                     {
-                        SearchNode.OptimizePathsToStart(currentNeightborNode, this);                        
-                    }
-                    else 
+                        currentNeightborNode = this.DiscoverNode(lab[neightbor.R][neightbor.C], neightbor);
+                        if (currentNeightborNode != null)
+                        {// add a node to explore                            
+                            SearchNode.unknownNodes.Enqueue(currentNeightborNode);
+                        }
+
+                    }else if (!currentNeightborNode.Deadend)// already displayed on another path , does it exist any shortcuts?
                     {
-                        currentNeightborNode = this.discoverNode(lab[neightbor.R][neightbor.C], neightbor);
-                        SearchNode.searchTree[neightbor.R, neightbor.C] = currentNeightborNode;
-
-                        if (currentNeightborNode != null && !currentNeightborNode.Deadend)
-                            currentNeightborNode.Explore(lab, neightbor.R, neightbor.C, ReverseDirections[d]);
-
+                        //SearchNode.OptimizePathsToStart(currentNeightborNode, this);
                     }
+
                     nodes[d] = currentNeightborNode;
 
-                    if (currentNeightborNode != null && currentNeightborNode.Final && currentNeightborNode.StepsToT <= SearchNode.A) // final point found
+                    //Console.Error.WriteLine("  node "+d+"" + currentNeightborNode);
+                    if (currentNeightborNode!=null && currentNeightborNode.Final && currentNeightborNode.StepsToStart <= SearchNode.A) // final point found
                     {
+                        SearchNode.OptimizedPathFound = true;
                         // optimum path found => end the exploration routine
-                        return;
+                        SearchNode.unknownNodes.Clear();
+                        SearchNode.unknownNodes.Enqueue(currentNeightborNode);
                     }
-                }                
+                  }
+            }
+            this.ProcessDeadend();
+            Console.Error.WriteLine("Explo2 " + this);
+
+            if(Unknown)
+                SearchNode.newNodes.Enqueue(this);
+        }
+    }
+
+    // Phase1: for exploring purpose
+    public static int MoveToTarget(SearchNode target)
+    {        
+        // change the target if only previous is not reached
+        if (target != null && (SearchNode.targetNode == null || SearchNode.pathCurrentToTarget.Count == 0))
+        {            
+            SearchNode.ChangeTarget(target);
+        }
+        
+        if (SearchNode.pathCurrentToTarget == null || SearchNode.pathCurrentToTarget.Count == 0)
+            throw new Exception("No SOLUTION to exit the labyrinth");
+        return SearchNode.InverseDirection[SearchNode.pathCurrentToTarget.Pop()];
+    }
+    /// <summary>
+    /// rebuild a path FROM Current TO Target
+    /// </summary>
+    /// <param name="target"></param>
+    private static void ChangeTarget(SearchNode target)
+    {
+        Console.Error.WriteLine("ChangeTarget: " + target);
+        SearchNode.targetNode = target;
+        SearchNode.pathCurrentToTarget = new Stack<int>();        
+        SearchNode onPathNode = target;
+        int steps = target.StepsToCurrent;
+        int s;
+        int direction = -1;
+        Console.Error.WriteLine("ChangeTarget steps: " + steps);
+        SearchNode n=null;
+        int[] directions = SearchNode.AllDirections;
+        while (steps > 0)
+        {            
+            foreach (int d in directions)
+            {               
+                n = onPathNode.nodes[d];
+                if (n != null)
+                {
+                    if(n.StepsToCurrent == (steps - 1))
+                    {
+                        direction = d;                        
+                        SearchNode.pathCurrentToTarget.Push(d);
+                        onPathNode = n;
+                        Console.Error.WriteLine("ChangeTarget steps: " + (steps - 1) + "  " + d + "  " + n);
+                    }
+                }
+            }
+            directions = ReverseDirections[direction];                       
+            steps--;
+        }
+        Console.Error.WriteLine("ChangeTarget countPath: " + SearchNode.pathCurrentToTarget.Count);
+    }
+    /// <summary>
+    /// rebuild a path FROM Origin TO Start
+    /// </summary>
+    /// <param name="origin"></param>
+    private static void ChangeOrigin(SearchNode origin)
+    {
+        Console.Error.WriteLine("ChangeOrigin: " + origin);        
+        SearchNode.pathFinalToStart = new Queue<int>();
+        SearchNode onPathNode = origin;
+        int steps = origin.StepsToStart;
+        int s;
+        int direction = -1;
+        Console.Error.WriteLine("ChangeOrigin steps: " + steps);
+        SearchNode n = null;
+        int[] directions = SearchNode.AllDirections;
+        while (steps > 0)
+        {
+            foreach (int d in directions)
+            {
+                n = onPathNode.nodes[d];
+                if (n != null)
+                {
+                    if (n.StepsToStart == (steps - 1))
+                    {
+                        direction = d;
+                        SearchNode.pathFinalToStart.Enqueue(d);
+                        onPathNode = n;
+                        Console.Error.WriteLine("ChangeOrigin steps: " + (steps - 1) + "  " + d + "  " + n);
+                    }
+                }
+            }
+            directions = ReverseDirections[direction];
+            steps--;
+        }
+        Console.Error.WriteLine("ChangeOrigin countPath: " + SearchNode.pathFinalToStart.Count);
+    }
+    public static void ReturnToStart()
+    {
+        SearchNode.ChangeOrigin(SearchNode.finalNode);
+        Console.Error.WriteLine("Chemin to start en"+SearchNode.pathCurrentToTarget.Count);
+    }
+        
+    // Phase3: Current has to go back to Start
+    public static int MoveToStart()
+    {
+        Console.Error.WriteLine("Chemin to start en" + SearchNode.pathCurrentToTarget.Count);
+        if (SearchNode.pathFinalToStart == null || SearchNode.pathFinalToStart.Count == 0)
+            throw new Exception("No SOLUTION to exit the labyrinth");
+        return SearchNode.pathFinalToStart.Dequeue();
+    }
+
+    // Phase2:  the Final node is known and the back retrn is optimized ( stepsToT <= A )
+    public static int MoveToFinal()
+    {
+        if (SearchNode.targetNode == null || SearchNode.targetNode != SearchNode.finalNode)
+        {
+            SearchNode.ChangeTarget(SearchNode.finalNode);
+        }
+
+        if (SearchNode.pathCurrentToTarget == null || SearchNode.pathCurrentToTarget.Count == 0)
+            throw new Exception("No SOLUTION to exit the labyrinth");
+        return SearchNode.InverseDirection[SearchNode.pathCurrentToTarget.Pop()];
+
+    }
+
+
+    #endregion
+    #region private
+    /// <summary>
+    /// check if a exit is possible and if not ... optimize the previous path 
+    /// </summary>
+    private void ProcessDeadend()
+    {
+        if (this.Final || this.Start || this.Unknown)
+            this.nbNodes = 4;
+        else
+        {
+            this.nbNodes = 0;
+
+            foreach (SearchNode n in this.nodes)
+            {
+                if ((n != null) && (!n.Deadend))
+                {
+                    this.nbNodes++;
+                }
+            }
+            if (this.Deadend)
+            {
+                foreach (SearchNode n in this.nodes)
+                {
+                    if ((n != null) && (!n.Deadend))
+                    {
+                        n.ProcessDeadend(); ;
+                    }
+
+                }
+            }
+        }
+    }
+    private void SetPathToCurrent(int steps)
+    {
+        int s = this.StepsToCurrent;
+        if (s == -1)
+        {
+            this.StepsToCurrent = steps;            
+            if (this.Final)
+                return;
+
+            foreach (SearchNode n in this.nodes)
+            {
+                if (n != null)
+                {
+                    n.SetPathToCurrent(steps + 1);
+                }
             }
         }
     }
 
-
-        // Phase1: for exploring purpose
-        public int? MoveKtoExplore(int direction)
+    private void FoundShortCutsToStart(int steps)
     {
-        return RIGHT;
-    }
-    // Phase3: K has to go back to T
-    public int? MoveKtoT(int direction)
-    {
-        return RIGHT;
-    }
-    // Phase2:  the C is known and the back path is optimized ( stepsToT <= A )
-    public int? MoveKtoC(int direction)
+        this.StepsToStart = steps;
+        if (this.Final)
+            return;
+        foreach (SearchNode n in this.nodes)
         {
-            if ((direction >= 45 && direction <= 135) && Right != null && (Right.Unknown || !Right.Deadend))
-                return RIGHT;
-            if ((direction >= 225 && direction <= 315) && Left != null && (Left.Unknown || !Left.Deadend))
-                return LEFT;
-            if ((direction >= 315 && direction <= 45) && Up != null && (Up.Unknown || !Up.Deadend))
-                return UP;
-            if ((direction >= 135 && direction <= 225) && Down != null && (Down.Unknown || !Down.Deadend))
-                return DOWN;
-            if (Right != null && (!Right.Deadend))
-                return RIGHT;
-            if (Left != null && (!Left.Deadend))
-                return LEFT;
-            if (Up != null && (!Up.Deadend))
-                return UP;
-            if (Down != null && (!Down.Deadend))
-                return DOWN;
-            return null;
+            if ((n != null) && (n.StepsToStart > (steps + 1)))
+                n.FoundShortCutsToStart(steps + 1);
         }
-    private SearchNode discoverNode(char? v, Coord c)
+    }
+
+    private SearchNode DiscoverNode(char? v, Coord c)
     {
         switch (v)
         {
             case '.':
-                return new SearchNode(c, this.StepsToT+1, this.StepsToK + 1,true );
+                return SearchNode.AddNewNodeSearchTree(c, this.StepsToStart+1, this.StepsToCurrent +1);
             case 'C': // final point
                 // found the path
-                SearchNode.finalNode = new SearchNode(c, this.StepsToT + 1, this.StepsToK + 1, true);
+                SearchNode.finalNode = SearchNode.AddNewNodeSearchTree(c, this.StepsToStart + 1, this.StepsToCurrent + 1);
                 return SearchNode.finalNode;
             case 'T':
                 // back to a new start?
-                SearchNode startNode = new SearchNode(c, 0, this.StepsToK + 1,true);
-                return startNode;
+                SearchNode.startNode = SearchNode.AddNewNodeSearchTree(c, 0, this.StepsToCurrent + 1);
+                return SearchNode.startNode;
             case '?':
-                this.Unknown = true;
+                this.Unknown = true;                
                 return null;
             default:
             case '#':
                 return null;
         }
     }
+#endregion
 
-        public override string ToString()
-        {
-            string s = "stepsToT : " + this.StepsToT + " deadend ? " + this.Deadend;
-
-        if (this.Right != null)
-            s += "|right" + " deadend ? " + Right.Deadend; ;
-            if (Left != null)
-                s += "|left" + " deadend ? " + Left.Deadend; ;
-            if (Up != null)
-                s += "|up" + " deadend ? " + Up.Deadend; ;
-            if (Down != null)
-                s += "|down" + " deadend ? " + Down.Deadend; ;
-
-            return s;
-        }
+    #region override utils
+    public bool Equals(SearchNode nodeObj)
+    {
+        if (nodeObj == null)
+            return false;
+        return (nodeObj.Point == this.Point);
     }
+    public override bool Equals(object obj)
+    {
+        if (obj == null)
+            return false;
+
+        SearchNode coordObj = obj as SearchNode;
+        return Equals(coordObj);
+    }
+    public override int GetHashCode()
+    {
+        return this.Point.GetHashCode();
+    }
+    public static bool operator ==(SearchNode n1, SearchNode n2)
+    {
+        if (((object)n1) == null)
+            return Object.Equals(n1, n2);
+        else
+            return n1.Equals(n2);
+    }
+
+    public static bool operator !=(SearchNode n1, SearchNode n2)
+    {
+        if (((object)n1) == null)
+            return !Object.Equals(n1, n2);
+        else
+            return !n1.Equals(n2);
+    }
+    public override string ToString()
+        {
+            return "SearchNode"+this.Point.ToString()+" stepsToStart: " + this.StepsToStart+
+            " stepsToCurrent: " + this.StepsToCurrent + "dir:"+(this.Right!=null?"R":"")+(this.Left != null ? "L" : "")+ (this.Up != null ? "U" : "")+(this.Down != null ? "D" : "")+
+            (this.Unknown ? "|Unknown" : "") + (this.Deadend?"|Deadend":"") + (this.Final ? "|Final" : "");
+        }
+    #endregion
+}
 
 /**
  * Auto-generated code below aims at helping you parse
@@ -309,7 +500,7 @@ class Player
 {
     static void Main(string[] args)
     {
-        Console.SetIn(new Codingame_Labyrinth_Console());        
+        //Console.SetIn(new Codingame_Labyrinth_Console());
 
         string[] inputs;
         inputs = Console.ReadLine().Split(' ');
@@ -318,21 +509,14 @@ class Player
         int A = int.Parse(inputs[2]); // number of rounds between the time the alarm countdown is activated and the time the alarm goes off.
 
         char[][] lab = new char[R][];
-        SearchNode.C = C;
-        SearchNode.R = R;
-        SearchNode.A = A;
-        SearchNode.searchTree = new SearchNode[R, C];
-        Console.Error.WriteLine("C: " + C + " R " + R +" A " + A );
+        Console.Error.WriteLine(" R:" + R + "C: " + C + " A " + A);
 
-        int TR = -1, TC = -1, CR = -1, CC = -1; //row & column of T and C points
-        // List of the SearchNode with ?, the nearest from K is the first
-        SortedList<int,SearchNode> unkwnownNodes = new SortedList<int,SearchNode>(); 
         Stack<int> oneWayCommands = new Stack<int>(); // history of the Kirk commands
         int direction = -1; // strategies pour une direction optimisée  : entre 0 et 360  : avec 0 = UP, 180 = DOWN, 90 = RIGHT , 270 = LEFT
 
-        bool oneWay = true; // pahse d exploration
+        bool explorePhase = true; // explore phase 
+        bool returnPhase = false; // return ( final to start) phase
         int nbMouvements = 1200;
-        bool Cfound = false;
 
 
         while (true)
@@ -340,126 +524,88 @@ class Player
             inputs = Console.ReadLine().Split(' ');
             int KR = int.Parse(inputs[0]); // row where Kirk is located.
             int KC = int.Parse(inputs[1]); // column where Kirk is located.
-            if (TR == -1) // init de la premier position
+            if (SearchNode.startNode == null) // init de la premier position
             {
-                SearchNode.startNode = new SearchNode(new Coord(KR, KC), 0, 0);
-                unkwnownNodes.Add(0, SearchNode.startNode);
-                TR = KR; TC = KC;
-                SearchNode.searchTree[TR, TC] = SearchNode.startNode;
+                SearchNode.InitSearchTree(R, C, A, KR, KC);
+                SearchNode.unknownNodes.Enqueue(SearchNode.startNode);
             }
-
 
             for (int i = 0; i < R; i++)
             {
                 string ROW = Console.ReadLine(); // C of the characters in '#.TC?' (i.e. one line of the ASCII maze).
                 lab[i] = ROW.ToCharArray();
-                if (CC == -1 && (CC = ROW.IndexOf('C')) >= 0)
-                {
-                    CR = i;
-                    Cfound = true;
-                    Console.Error.WriteLine("C point found: " + CR + ',' + CC);
-                }
+                Console.Error.WriteLine(ROW);
             }
             Console.Error.WriteLine("Kirk " + KR + ',' + KC);
+            SearchNode.currentNode = SearchNode.searchTree[KR, KC];
 
-            if (lab[KR][KC] == 'C') // Le point de destination a été touché /retour à la base
+            if (SearchNode.OptimizedPathFound && SearchNode.currentNode == SearchNode.finalNode)
             {
-                oneWay = false;
-                direction = -1;
+                Console.Error.WriteLine("Phase Return");
+
+                returnPhase = true;
+                explorePhase = false;
+                SearchNode.ReturnToStart();
             }
 
-            if (oneWay)
+            if (explorePhase && !SearchNode.OptimizedPathFound)
             {
-                // exploration du lab affiché
-                SearchNode currentPosition = unkwnownNodes[0];
+                SearchNode.CalculatePathsToCurrent();
+            }
+            if (explorePhase)
+            { 
+                Console.Error.WriteLine("dump current Node: " + SearchNode.currentNode.ToString());
 
-
-                currentPosition.Explore(lab, KR, KC, SearchNode.AllDirections); // exploration recursive : tant que des nouveaux points ont apparus
-                Console.Error.WriteLine("dump current Node: " + currentPosition.ToString());
-                
-                // direction à rechercher si la cible a été affichée
-                if (Cfound)
+                // explore all the previously unknown nodes
+                SearchNode n = null;
+                while (SearchNode.unknownNodes.Count >0)
                 {
-                    direction = 0;
-                    int nb = 1;
-                    if (KC < CC)
-                    {
-                        direction = 90; // Right
-                        nb = 2;
-                    }
-                    else if (KC > CC)
-                    {
-                        direction = 270; // Left
-                        nb = 2;
-                    }
+                    n=SearchNode.unknownNodes.Dequeue();
+                    n.Explore(lab);                    
+                }
+                Console.Error.WriteLine("dump last expl Node: " + n);
 
-                    if (KR > CR)
-                    {
-                        direction = (direction + 360) / nb; // Up
-                    }
-                    else if (KR < CR)
-                    {
-                        direction = (direction + 180) / nb; // down
-                    }
+                // Final node is displayed and the optimized path found  => exit the exploration phase
+                if (SearchNode.OptimizedPathFound)
+                {                   
+                    direction = SearchNode.MoveToFinal();
 
                     Console.Error.WriteLine("direction (cible trouvée) : " + direction);
                 }
-
-
-                // pas de direction ou blocage par des murs?  algo de recherche => privilegier le centre
-                if (direction == -1)
+                else // continue to explore
                 {
-                    direction = 0;
-                    int nb = 1;
-                    if ((KC - C / 2) < 0)
+                    SearchNode target = null;
+                    int nearestFromCurrent = Int32.MaxValue;
+                    while (SearchNode.newNodes.Count > 0)
                     {
-                        direction = 90; // Right
-                        nb = 2;
-                    }
-                    else if ((KC - C / 2) > 0)
-                    {
-                        direction = 270; // Left
-                        nb = 2;
-                    }
+                        n = SearchNode.newNodes.Dequeue();
+                        SearchNode.unknownNodes.Enqueue(n);
+                        if(nearestFromCurrent > n.StepsToCurrent)
+                        {
+                            nearestFromCurrent = n.StepsToCurrent;
+                            target = n;
+                        }
 
-                    if ((KR - R / 2) > 0)
-                    {
-                        direction = (direction + 360) / nb; // Up
-                    }
-                    else if ((KR - R / 2) < 0)
-                    {
-                        direction = (direction + 180) / nb; // down
-                    }
+                    }                    
+                    Console.Error.WriteLine("direction (explo) P vers: " + target);
+                    Console.Error.WriteLine("direction (explo)   vers: " + SearchNode.targetNode);
 
-
-                    Console.Error.WriteLine("direction (deplcement vers le centre?) : " + direction);
+                    // explore is to go tho the nearest Unknown node
+                    direction = SearchNode.MoveToTarget(target);
+                    Console.Error.WriteLine("direction (explo) : " + direction);
                 }
-
-                int? nextNode = currentPosition.MoveKtoExplore(direction);
-
-
-                Console.Error.WriteLine("Best Next Node: " + nextNode);
-                if (nextNode != null)
-                {
-                    Console.WriteLine(SearchNode.Commands[(int)nextNode]); 
-                    oneWayCommands.Push((int)nextNode);
-                }
-                else
-                {
-                    direction = -1;
-                }
-            } /// fin de l aller 
-
-
-            // pas de direction ou alors retour à la base/T: faire marche arriere 
-            if (direction == -1)
-            {
-
-                int last = SearchNode.LEFT;
-                if (oneWayCommands.Count != 0)
-                    last = oneWayCommands.Pop();
-                Console.WriteLine(SearchNode.Commands[ SearchNode.InverseDirection[last] ]);
             }
+            else if( returnPhase)
+            {
+                Console.Error.WriteLine("direction (MoveToStart) :");
+
+               direction = SearchNode.MoveToStart();
+            }
+            Console.WriteLine(SearchNode.Commands[direction]);
+
+
+    
+            
 
         }// end ofwhile
         // Kirk est sur le point C
