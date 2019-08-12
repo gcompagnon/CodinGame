@@ -5,7 +5,16 @@ using System.Text;
 using System.Collections;
 using System.Collections.Generic;
 
-
+public struct UpdateStepNode
+    {
+    public SearchNode node;
+    public int steps;
+    public UpdateStepNode(SearchNode s, int st)
+    {
+        node = s;
+        steps = st;
+    }
+}
 public class Coord
 {
     public int R { get; set; }
@@ -55,16 +64,26 @@ public class Coord
         return "(R:" + this.R + ",C:" + this.C + ")";
     }
 }
+/// <summary>
+/// Implement a Djistra algo / Tree of SearchNode, each has counts to 2 points : Start and Current
+/// @author gcompagnon
+/// </summary>
 public class SearchNode
     {
     public static SearchNode[,] searchTree;
     public static SearchNode startNode, finalNode, currentNode, targetNode;
-    // List of the SearchNode with leafs with ?, the nearest from K is the first
-    public static Queue<SearchNode> unknownNodes = new Queue<SearchNode>();
     public static Queue<int> pathFinalToStart;
     public static Stack<int> pathCurrentToTarget;
+
     private static int?[,] stepsToCurrent; // reinstance each turn , each time , the position changes
-    public static Queue<SearchNode> newNodes = new Queue<SearchNode> ();
+    private static int?[,] stepsToStart; // contains for each node, the steps from it to start
+
+    // List of the SearchNode with leafs with ?, the nearest from K is the first
+    public static Queue<SearchNode> unknownNodes = new Queue<SearchNode>();
+    public static Queue<SearchNode> newNodes = new Queue<SearchNode>();    
+
+    // flag if path from Start to Final , found with optimized path
+    public static bool OptimizedPathFound;
 
     public static int C, R, A;
     public const int DOWN = 0;
@@ -87,31 +106,35 @@ public class SearchNode
 
     // nb of usefull nodes, not null, not deadend
     private int nbNodes;
-    public static bool OptimizedPathFound;
+
 
     public bool Deadend { get => (nbNodes <= 1);  } // meaning no more exit in the leaf => optimization
 
-    // minimal to go to T / value 0 at the point T
-    public int StepsToStart { get ; set ; }
-    // minimal to go back to K / value 0 at the point K
     public bool Final { get => (finalNode != null && this.Point == SearchNode.finalNode.Point); }
     public bool Start { get => (startNode != null && this.Point == SearchNode.startNode.Point); }
     public bool Current { get => (currentNode != null && this.Point == SearchNode.currentNode.Point); }
-    public bool Explored { get; private set; }
-
     //  leafs with ?
     public bool Unknown { get; set; }
-    public int StepsToCurrent { get => (SearchNode.stepsToCurrent[this.Point.R, this.Point.C] ?? -1);
-                                private set => SearchNode.stepsToCurrent[this.Point.R, this.Point.C] = value; }
-
-
-    private SearchNode(Coord point, int stepsToStart)
+    
+    // minimal to go back to Current / value 0 at the point Current
+    public int StepsToCurrent
+    {
+        get => (SearchNode.stepsToCurrent[this.Point.R, this.Point.C] ?? -1);
+        private set => SearchNode.stepsToCurrent[this.Point.R, this.Point.C] = value;
+    }
+    // minimal to go to start / value 0 at the point Start
+    public int StepsToStart
+    {
+        get => (SearchNode.stepsToStart[this.Point.R, this.Point.C] ?? -1);
+        private set => SearchNode.stepsToStart[this.Point.R, this.Point.C] = value;
+    }
+    private SearchNode(Coord point, int stepsToStart, int stepsToCurrent)
     {
         Point = point;
         nbNodes = 4;
-        StepsToStart = stepsToStart;
         Unknown = true;
-        Explored = false;
+        StepsToStart = stepsToStart;
+        StepsToCurrent = stepsToCurrent;        
     }
 
     #region static utils
@@ -130,40 +153,52 @@ public class SearchNode
             SearchNode.C = c;
             SearchNode.R = r;
             SearchNode.A = a;
+            SearchNode.stepsToCurrent = new int?[SearchNode.R, SearchNode.C];
+            SearchNode.stepsToStart = new int?[SearchNode.R, SearchNode.C];
             SearchNode.searchTree = new SearchNode[r, c];
-            SearchNode.startNode = new SearchNode(new Coord(startR, startC), 0);
+            SearchNode.startNode = new SearchNode(new Coord(startR, startC), 0, 0);
             SearchNode.searchTree[startR, startC] = SearchNode.startNode;
             SearchNode.OptimizedPathFound = false;
-            SearchNode.stepsToCurrent = new int?[SearchNode.R, SearchNode.C];
         }
     }
-    public static SearchNode AddNewNodeSearchTree(Coord c, int stepsToStart, int? stepsToCurrent)
+    public static SearchNode AddNewNodeSearchTree(Coord c, int stepsToStart, int stepsToCurrent)
     {
-        SearchNode node = new SearchNode(c, stepsToStart);
+        SearchNode node = new SearchNode(c, stepsToStart, stepsToCurrent);
         SearchNode.searchTree[c.R, c.C] = node;
-        node.StepsToCurrent = stepsToCurrent ?? -1;
         return node;
-    }
-    public static void OptimizePathsToStart(SearchNode a, SearchNode b)
-    {
-        Console.Error.WriteLine("OptimizePathsToStart " + a);
-        Console.Error.WriteLine("OptimizePathsToStart " +b);
-        if (a != null && b != null)
-        {
-            if (a.StepsToStart > b.StepsToStart)
-            {
-                a.FoundShortCutsToStart(b.StepsToStart);
-            }
-            else if (a.StepsToStart > b.StepsToStart)
-            {
-                b.FoundShortCutsToStart(a.StepsToStart);
-            }
-        }
     }
     public static void CalculatePathsToCurrent()
     {
         SearchNode.stepsToCurrent = new int?[SearchNode.R, SearchNode.C];
-        SearchNode.currentNode.SetPathToCurrent(0);
+        SearchNode.currentNode.CalculatePathsToCurrent(0); 
+    }
+    public void CalculatePathsToCurrent(int step)
+    {
+        Queue<UpdateStepNode> toRecalculate = new Queue<UpdateStepNode>();
+        toRecalculate.Enqueue(new UpdateStepNode(this, step));
+        while (toRecalculate.Count > 0)
+        {
+            UpdateStepNode c = toRecalculate.Dequeue();
+            if (!c.node.Deadend)
+                c.node.SetPathToCurrent(c.steps, toRecalculate);
+        }
+    }
+
+    public static void CalculatePathsToStart()
+    {
+        SearchNode.startNode.CalculatePathsToStart(0);
+    }
+
+    public void CalculatePathsToStart(int step)
+    {
+        Queue<UpdateStepNode> toRecalculate = new Queue<UpdateStepNode>();
+        toRecalculate.Enqueue(new UpdateStepNode(this, step));
+        while (toRecalculate.Count > 0)
+        {
+            UpdateStepNode c = toRecalculate.Dequeue();
+            if (!c.node.Deadend)
+                c.node.SetPathToStart(c.steps, toRecalculate);
+        }
     }
 
     /// <summary>
@@ -203,7 +238,6 @@ public class SearchNode
     {        
         if (Unknown)
         {
-            //Console.Error.WriteLine("Explo1 " + this);            
             Unknown = false; //stay to known if any other neighbor is '?'  
             foreach (int d in SearchNode.AllDirections)
             {
@@ -212,33 +246,42 @@ public class SearchNode
                 if (neightbor != null) // if not on a frontier
                 {
                     currentNeightborNode = SearchNode.searchTree[neightbor.R, neightbor.C];
+                    nodes[d] = currentNeightborNode;
+
                     if (currentNeightborNode == null)
                     {
                         currentNeightborNode = this.DiscoverNode(lab[neightbor.R][neightbor.C], neightbor);
-                        if (currentNeightborNode != null)
+                        nodes[d] = currentNeightborNode;
+                        if (currentNeightborNode != null && !SearchNode.OptimizedPathFound)
                         {// add a node to explore                            
-                            SearchNode.unknownNodes.Enqueue(currentNeightborNode);
+                            SearchNode.unknownNodes.Enqueue(currentNeightborNode);                            
+                        }
+                    }
+                    else
+                    {
+                        // the neightbor has been explored / update Paths if shortcut
+                        if (this.StepsToStart> (currentNeightborNode.StepsToStart + 1))
+                        {
+                            // recalculate StepsStart
+                            this.CalculatePathsToStart(currentNeightborNode.StepsToStart + 1);
+                        }
+                        if (this.StepsToCurrent > (currentNeightborNode.StepsToCurrent + 1))
+                        {
+                            // recalculate StepsStart
+                            this.CalculatePathsToCurrent(currentNeightborNode.StepsToCurrent + 1);
                         }
 
-                    }else if (!currentNeightborNode.Deadend)// already displayed on another path , does it exist any shortcuts?
-                    {
-                        //SearchNode.OptimizePathsToStart(currentNeightborNode, this);
                     }
 
-                    nodes[d] = currentNeightborNode;
 
-                    //Console.Error.WriteLine("  node "+d+"" + currentNeightborNode);
                     if (currentNeightborNode!=null && currentNeightborNode.Final && currentNeightborNode.StepsToStart <= SearchNode.A) // final point found
                     {
                         SearchNode.OptimizedPathFound = true;
                         // optimum path found => end the exploration routine
-                        SearchNode.unknownNodes.Clear();
-                        SearchNode.unknownNodes.Enqueue(currentNeightborNode);
                     }
                   }
             }
             this.ProcessDeadend();
-            Console.Error.WriteLine("Explo2 " + this);
 
             if(Unknown)
                 SearchNode.newNodes.Enqueue(this);
@@ -249,98 +292,28 @@ public class SearchNode
     public static int MoveToTarget(SearchNode target)
     {        
         // change the target if only previous is not reached
-        if (target != null && (SearchNode.targetNode == null || SearchNode.pathCurrentToTarget.Count == 0))
+        if (target != null && ( SearchNode.targetNode == null || !SearchNode.targetNode.Unknown ))
         {            
             SearchNode.ChangeTarget(target);
         }
-        
+        return MoveToTarget();
+    }
+    public static int MoveToTarget()
+    {
         if (SearchNode.pathCurrentToTarget == null || SearchNode.pathCurrentToTarget.Count == 0)
             throw new Exception("No SOLUTION to exit the labyrinth");
         return SearchNode.InverseDirection[SearchNode.pathCurrentToTarget.Pop()];
     }
-    /// <summary>
-    /// rebuild a path FROM Current TO Target
-    /// </summary>
-    /// <param name="target"></param>
-    private static void ChangeTarget(SearchNode target)
-    {
-        Console.Error.WriteLine("ChangeTarget: " + target);
-        SearchNode.targetNode = target;
-        SearchNode.pathCurrentToTarget = new Stack<int>();        
-        SearchNode onPathNode = target;
-        int steps = target.StepsToCurrent;
-        int s;
-        int direction = -1;
-        Console.Error.WriteLine("ChangeTarget steps: " + steps);
-        SearchNode n=null;
-        int[] directions = SearchNode.AllDirections;
-        while (steps > 0)
-        {            
-            foreach (int d in directions)
-            {               
-                n = onPathNode.nodes[d];
-                if (n != null)
-                {
-                    if(n.StepsToCurrent == (steps - 1))
-                    {
-                        direction = d;                        
-                        SearchNode.pathCurrentToTarget.Push(d);
-                        onPathNode = n;
-                        Console.Error.WriteLine("ChangeTarget steps: " + (steps - 1) + "  " + d + "  " + n);
-                    }
-                }
-            }
-            directions = ReverseDirections[direction];                       
-            steps--;
-        }
-        Console.Error.WriteLine("ChangeTarget countPath: " + SearchNode.pathCurrentToTarget.Count);
-    }
-    /// <summary>
-    /// rebuild a path FROM Origin TO Start
-    /// </summary>
-    /// <param name="origin"></param>
-    private static void ChangeOrigin(SearchNode origin)
-    {
-        Console.Error.WriteLine("ChangeOrigin: " + origin);        
-        SearchNode.pathFinalToStart = new Queue<int>();
-        SearchNode onPathNode = origin;
-        int steps = origin.StepsToStart;
-        int s;
-        int direction = -1;
-        Console.Error.WriteLine("ChangeOrigin steps: " + steps);
-        SearchNode n = null;
-        int[] directions = SearchNode.AllDirections;
-        while (steps > 0)
-        {
-            foreach (int d in directions)
-            {
-                n = onPathNode.nodes[d];
-                if (n != null)
-                {
-                    if (n.StepsToStart == (steps - 1))
-                    {
-                        direction = d;
-                        SearchNode.pathFinalToStart.Enqueue(d);
-                        onPathNode = n;
-                        Console.Error.WriteLine("ChangeOrigin steps: " + (steps - 1) + "  " + d + "  " + n);
-                    }
-                }
-            }
-            directions = ReverseDirections[direction];
-            steps--;
-        }
-        Console.Error.WriteLine("ChangeOrigin countPath: " + SearchNode.pathFinalToStart.Count);
-    }
+
+
     public static void ReturnToStart()
     {
         SearchNode.ChangeOrigin(SearchNode.finalNode);
-        Console.Error.WriteLine("Chemin to start en"+SearchNode.pathCurrentToTarget.Count);
     }
-        
+
     // Phase3: Current has to go back to Start
     public static int MoveToStart()
     {
-        Console.Error.WriteLine("Chemin to start en" + SearchNode.pathCurrentToTarget.Count);
         if (SearchNode.pathFinalToStart == null || SearchNode.pathFinalToStart.Count == 0)
             throw new Exception("No SOLUTION to exit the labyrinth");
         return SearchNode.pathFinalToStart.Dequeue();
@@ -359,10 +332,72 @@ public class SearchNode
         return SearchNode.InverseDirection[SearchNode.pathCurrentToTarget.Pop()];
 
     }
-
-
     #endregion
     #region private
+    /// <summary>
+    /// rebuild a path FROM Current TO Target
+    /// </summary>
+    /// <param name="target"></param>
+    private static void ChangeTarget(SearchNode target)
+    {
+        SearchNode.targetNode = target;
+        SearchNode.pathCurrentToTarget = new Stack<int>();        
+        SearchNode onPathNode = target;
+        int steps = target.StepsToCurrent;
+        int direction = -1;
+        SearchNode n=null;
+        int[] directions = SearchNode.AllDirections;
+        while (steps > 0)
+        {            
+            foreach (int d in directions)
+            {               
+                n = onPathNode.nodes[d];
+                if (n != null)
+                {
+                    if(n.StepsToCurrent == (steps - 1))
+                    {
+                        direction = d;                        
+                        SearchNode.pathCurrentToTarget.Push(d);
+                        onPathNode = n;
+                    }
+                }
+            }
+            directions = ReverseDirections[direction];                       
+            steps--;
+        }
+    }
+    /// <summary>
+    /// rebuild a path FROM Origin TO Start
+    /// </summary>
+    /// <param name="origin"></param>
+    private static void ChangeOrigin(SearchNode origin)
+    {               
+        SearchNode.pathFinalToStart = new Queue<int>();
+        SearchNode onPathNode = origin;
+        int steps = origin.StepsToStart;
+        int direction = -1;
+        SearchNode n = null;
+        int[] directions = SearchNode.AllDirections;
+        while (steps > 0)
+        {
+            foreach (int d in directions)
+            {
+                n = onPathNode.nodes[d];
+                if (n != null)
+                {
+                    if (n.StepsToStart == (steps - 1))
+                    {
+                        direction = d;
+                        SearchNode.pathFinalToStart.Enqueue(d);
+                        onPathNode = n;
+                    }
+                }
+            }
+            directions = ReverseDirections[direction];
+            steps--;
+        }
+    }
+
     /// <summary>
     /// check if a exit is possible and if not ... optimize the previous path 
     /// </summary>
@@ -394,10 +429,10 @@ public class SearchNode
             }
         }
     }
-    private void SetPathToCurrent(int steps)
+    private void SetPathToCurrent(int steps,Queue<UpdateStepNode> toRecalculate)
     {
         int s = this.StepsToCurrent;
-        if (s == -1)
+        if (s == -1 || s > steps)
         {
             this.StepsToCurrent = steps;            
             if (this.Final)
@@ -407,7 +442,25 @@ public class SearchNode
             {
                 if (n != null)
                 {
-                    n.SetPathToCurrent(steps + 1);
+                    toRecalculate.Enqueue(new UpdateStepNode(n, steps + 1));
+                }
+            }
+        }
+    }
+
+    private void SetPathToStart(int steps, Queue<UpdateStepNode> toRecalculate)
+    {
+        if (this.StepsToStart > steps)
+        {
+            this.StepsToStart = steps;
+            if (this.Final)
+                return;
+
+            foreach (SearchNode n in this.nodes)
+            {
+                if (n != null)
+                {
+                    toRecalculate.Enqueue(new UpdateStepNode(n,steps+1));
                 }
             }
         }
@@ -509,13 +562,15 @@ class Player
         int A = int.Parse(inputs[2]); // number of rounds between the time the alarm countdown is activated and the time the alarm goes off.
 
         char[][] lab = new char[R][];
-        Console.Error.WriteLine(" R:" + R + "C: " + C + " A " + A);
+//        Console.Error.WriteLine(" R:" + R + "C: " + C + " A " + A);
 
         Stack<int> oneWayCommands = new Stack<int>(); // history of the Kirk commands
         int direction = -1; // strategies pour une direction optimisée  : entre 0 et 360  : avec 0 = UP, 180 = DOWN, 90 = RIGHT , 270 = LEFT
 
-        bool explorePhase = true; // explore phase 
-        bool returnPhase = false; // return ( final to start) phase
+        // 3 phases: 
+        // Explore   ----------->   Touch Final ------------> Return to Start -------------> END
+        //    if optimizedPathfound         currentNode==FinalNode        currentNode==StartNode
+        bool explorePhase = true; // explore phase, and touch_FInal phase if true, return phases if false
         int nbMouvements = 1200;
 
 
@@ -533,79 +588,99 @@ class Player
             for (int i = 0; i < R; i++)
             {
                 string ROW = Console.ReadLine(); // C of the characters in '#.TC?' (i.e. one line of the ASCII maze).
+
                 lab[i] = ROW.ToCharArray();
                 Console.Error.WriteLine(ROW);
             }
-            Console.Error.WriteLine("Kirk " + KR + ',' + KC);
+            
             SearchNode.currentNode = SearchNode.searchTree[KR, KC];
+          //Console.Error.WriteLine("Current " + SearchNode.currentNode);
+          //Console.Error.WriteLine("Final " + SearchNode.finalNode);
 
-            if (SearchNode.OptimizedPathFound && SearchNode.currentNode == SearchNode.finalNode)
+
+            if (SearchNode.OptimizedPathFound)
             {
-                Console.Error.WriteLine("Phase Return");
+                if (SearchNode.currentNode == SearchNode.finalNode)
+                {
+                    //Console.Error.WriteLine("Phase: Return to start");
 
-                returnPhase = true;
-                explorePhase = false;
-                SearchNode.ReturnToStart();
+                    explorePhase = false;
+                    SearchNode.ReturnToStart();
+                }
+                else if (SearchNode.currentNode == SearchNode.startNode)
+                {
+                    break; // END
+                }
             }
 
-            if (explorePhase && !SearchNode.OptimizedPathFound)
-            {
-                SearchNode.CalculatePathsToCurrent();
-            }
             if (explorePhase)
-            { 
-                Console.Error.WriteLine("dump current Node: " + SearchNode.currentNode.ToString());
+            {
+                // change Target with the nearest Unknow Node from Current
+                SearchNode.CalculatePathsToCurrent();
+                //Console.Error.WriteLine("dump current Node: " + SearchNode.currentNode.ToString());
 
                 // explore all the previously unknown nodes
                 SearchNode n = null;
-                while (SearchNode.unknownNodes.Count >0)
+                while (SearchNode.unknownNodes.Count > 0)
                 {
-                    n=SearchNode.unknownNodes.Dequeue();
-                    n.Explore(lab);                    
+                    n = SearchNode.unknownNodes.Dequeue();
+                    if( !n.Deadend )
+                        n.Explore(lab);
                 }
-                Console.Error.WriteLine("dump last expl Node: " + n);
 
-                // Final node is displayed and the optimized path found  => exit the exploration phase
-                if (SearchNode.OptimizedPathFound)
-                {                   
-                    direction = SearchNode.MoveToFinal();
-
-                    Console.Error.WriteLine("direction (cible trouvée) : " + direction);
-                }
-                else // continue to explore
+                if (SearchNode.finalNode != null && SearchNode.finalNode.StepsToStart <= SearchNode.A) // final point found
                 {
-                    SearchNode target = null;
+                    SearchNode.OptimizedPathFound = true;
+                    // optimum path found => end the exploration routine
+                    SearchNode.unknownNodes.Clear();
+                }
+
+                //Console.Error.WriteLine("dump last expl Node: " + n);
+
+            }
+
+            // continue to explore: choose a Unknow node for going to
+            if (explorePhase && !SearchNode.OptimizedPathFound)
+            {
+                SearchNode target = null;
+
+                Queue<SearchNode> temp = SearchNode.unknownNodes;
+                SearchNode.unknownNodes = SearchNode.newNodes;
+                SearchNode.newNodes = temp;
+
+                if (SearchNode.targetNode == null || !SearchNode.targetNode.Unknown)
+                {
                     int nearestFromCurrent = Int32.MaxValue;
-                    while (SearchNode.newNodes.Count > 0)
+                    foreach( SearchNode n in SearchNode.unknownNodes)
                     {
-                        n = SearchNode.newNodes.Dequeue();
-                        SearchNode.unknownNodes.Enqueue(n);
-                        if(nearestFromCurrent > n.StepsToCurrent)
+                        if (nearestFromCurrent > n.StepsToCurrent && !n.Deadend)
                         {
                             nearestFromCurrent = n.StepsToCurrent;
                             target = n;
                         }
-
-                    }                    
-                    Console.Error.WriteLine("direction (explo) P vers: " + target);
-                    Console.Error.WriteLine("direction (explo)   vers: " + SearchNode.targetNode);
-
-                    // explore is to go tho the nearest Unknown node
-                    direction = SearchNode.MoveToTarget(target);
-                    Console.Error.WriteLine("direction (explo) : " + direction);
+                    }
+                    //Console.Error.WriteLine("direction (explo) P vers: " + target);
                 }
+                // explore is to go tho the nearest Unknown node
+                 direction = SearchNode.MoveToTarget(target);
+                 //Console.Error.WriteLine("direction (explo) : " + direction);
             }
-            else if( returnPhase)
+
+            // Touch Final
+            if (explorePhase && SearchNode.OptimizedPathFound)
             {
-                Console.Error.WriteLine("direction (MoveToStart) :");
-
-               direction = SearchNode.MoveToStart();
+                //Console.Error.WriteLine("direction (TouchFinal) : ");
+                direction = SearchNode.MoveToFinal();
             }
+
+            // Return to start 
+            if (!explorePhase && SearchNode.OptimizedPathFound)
+            {
+                //Console.Error.WriteLine("direction (MoveToStart) :");
+                direction = SearchNode.MoveToStart();
+            }
+
             Console.WriteLine(SearchNode.Commands[direction]);
-
-
-    
-            
 
         }// end ofwhile
         // Kirk est sur le point C

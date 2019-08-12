@@ -11,13 +11,13 @@ public class Codingame_Labyrinth_ConsoleWriter : TextWriter
 
 public class Codingame_Labyrinth_Console : TextReader
 {
-    static string[] map = {
+    static string[] map1 = {
         "###############",
         "##########C####",
         "##########.####",
-        "##########....#",
-        "#############.#",
-        "#############.#",
+        "#########.....#",
+        "#########.###.#",
+        "#########.###.#",
         "#######T......#",
         "##########.####",
         "##########.####",
@@ -43,8 +43,28 @@ public class Codingame_Labyrinth_Console : TextReader
         "###############",
         "###############"    };
 
+    static string[] map2 = {
+"##############################",
+"##.##....#.##.....##.###.....#",
+"##....##......####.......###.#",
+"#..##.##.#.##.####.##.##.###.#",
+"##.##.....#........##C.......#",
+"#.....###...###......###.#####",
+"###.#.###.#.....##..........##",
+"#.........###.###.##........##",
+"###.###.#............###.##..#",
+"###.....###.###.#........##.##",
+"#.########...##.##.##.#.#...##",
+"#.............###..#.#......##",
+"#.####.######.###.#######...##",
+"###........T#.......##......##",
+"??############################" };
     static int phase = -1;
     public override string ReadLine()
+    {
+        return this.ReadLine2();
+    }
+    public string ReadLine1()
     {
         switch (++phase)
         {
@@ -54,11 +74,28 @@ public class Codingame_Labyrinth_Console : TextReader
                 return "6 7";
             default:
                 if (phase < 31)
-                    return map[phase - 2];
+                    return map1[phase - 2];
                 else
                     return "";
 
         }        
     }
+    public string ReadLine2()
+    {
+        switch (++phase)
+        {
+            case 0:
+                return "15 30 33";
+            case 1:
+                return "13 11";
+            default:
+                if (phase < 17)
+                    return map2[phase - 2];
+                else
+                    return "";
+
+        }
+    }
+
 }
-    
+
